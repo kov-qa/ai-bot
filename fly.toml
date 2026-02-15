@@ -1,0 +1,8 @@
+app = "replace-with-your-fly-app-name"
+primary_region = "waw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "python bot.py"
