@@ -199,7 +199,7 @@ def set_runtime_target(application: Application, provider: str, model_name: str)
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         if not gemini_api_key:
             raise RuntimeError("Не задана переменная окружения: GEMINI_API_KEY")
-        genai.configure(api_key=gemini_api_key)
+        genai.configure(api_key=gemini_api_key, transport="rest")
         application.bot_data["gemini_model"] = genai.GenerativeModel(model_name)
 
     application.bot_data["provider"] = provider
@@ -374,7 +374,7 @@ def main() -> None:
     else:
         gemini_api_key = get_required_env("GEMINI_API_KEY")
         model_name = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-        genai.configure(api_key=gemini_api_key)
+        genai.configure(api_key=gemini_api_key, transport="rest")
         application.bot_data["gemini_model"] = genai.GenerativeModel(model_name)
 
     application.bot_data["provider"] = provider
