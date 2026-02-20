@@ -8,7 +8,7 @@ from typing import Final
 
 import google.generativeai as genai
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(
@@ -18,9 +18,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROVIDER: Final[str] = "gemini"
-DEFAULT_GEMINI_MODEL: Final[str] = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL: Final[str] = "gemini-3-flash-preview"
 DEFAULT_XAI_MODEL: Final[str] = "grok-4-latest"
 DEFAULT_TEMPERATURE: Final[float] = 0.7
+DEFAULT_PROVIDER_TIMEOUT: Final[int] = 90
 HISTORY_LIMIT: Final[int] = 10
 SYSTEM_PROMPT: Final[str] = (
     "Ты полезный ассистент в Telegram. "
@@ -28,7 +29,7 @@ SYSTEM_PROMPT: Final[str] = (
 )
 
 GEMINI_MODELS: Final[tuple[str, ...]] = (
-    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
 )
 
 XAI_MODELS: Final[tuple[str, ...]] = (
@@ -126,15 +127,19 @@ def explain_provider_error(exc: Exception, provider: str, model_name: str) -> st
         return f"Ошибка API-ключа/прав {provider}. Детали: {short}"
 
     if "quota" in lower or "429" in lower or "rate" in lower:
-        return f"Превышение квоты/лимита запросов {provider}. Детали: {short}"
+        return f"Rate or quota limit for {provider}. Details: {short}"
 
-    return f"Ошибка запроса к {provider}: {short}"
+    if "timeout" in lower or "timed out" in lower:
+        return f"Provider timeout ({provider}, model={model_name}). Try again later."
+
+    return f"Request error from {provider}: {short}"
 
 
 def generate_with_gemini(model: genai.GenerativeModel, prompt: str, temperature: float) -> str:
     response = model.generate_content(
         prompt,
         generation_config={"temperature": temperature},
+        request_options={"timeout": DEFAULT_PROVIDER_TIMEOUT},
     )
     return (response.text or "Не удалось получить ответ от Gemini.").strip()
 
@@ -156,7 +161,7 @@ def generate_with_xai(api_key: str, model_name: str, prompt: str, temperature: f
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=DEFAULT_PROVIDER_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         details = e.read().decode("utf-8", errors="ignore")
@@ -182,6 +187,34 @@ def generate_with_xai(api_key: str, model_name: str, prompt: str, temperature: f
         text = (content or "").strip()
 
     return text or "Не удалось получить ответ от xAI."
+
+
+def sanitize_telegram_text(text: str) -> str:
+    # Remove control/surrogate chars that can make Telegram reject a message.
+    cleaned = []
+    for ch in text:
+        code = ord(ch)
+        if code in (9, 10, 13) or (32 <= code <= 0xD7FF) or (0xE000 <= code <= 0x10FFFF):
+            cleaned.append(ch)
+    result = "".join(cleaned).strip()
+    return result or "(empty response)"
+
+
+async def send_reply_safe(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    safe_text = sanitize_telegram_text(text)
+    chunk_size = 4000
+    chunks = [safe_text[i : i + chunk_size] for i in range(0, len(safe_text), chunk_size)] or ["(empty response)"]
+
+    for chunk in chunks:
+        try:
+            await update.message.reply_text(chunk)
+        except TelegramError as exc:
+            logger.exception("reply_text failed, fallback to send_message: %s", exc)
+            await context.bot.send_message(chat_id=chat_id, text=chunk)
 
 
 def get_available_models(provider: str) -> tuple[str, ...]:
@@ -214,9 +247,9 @@ def persist_model(provider: str, model_name: str) -> None:
 def resolve_model_selection(raw: str) -> tuple[str, str] | None:
     normalized = " ".join(raw.strip().lower().replace("-", " ").split())
     aliases = {
-        "gemini": ("gemini", "gemini-2.5-flash"),
-        "gemini 2.5": ("gemini", "gemini-2.5-flash"),
-        "gemini 2.5 flash": ("gemini", "gemini-2.5-flash"),
+        "gemini": ("gemini", "gemini-3-flash-preview"),
+        "gemini 3": ("gemini", "gemini-3-flash-preview"),
+        "gemini 3 flash": ("gemini", "gemini-3-flash-preview"),
         "grok": ("xai", "grok-4-latest"),
         "grok 4": ("xai", "grok-4-latest"),
         "grok 4 latest": ("xai", "grok-4-latest"),
@@ -294,6 +327,12 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(explain_provider_error(exc, target_provider, target_model))
 
 
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    provider = context.application.bot_data.get("provider", DEFAULT_PROVIDER)
+    model_name = context.application.bot_data.get("model_name", DEFAULT_GEMINI_MODEL)
+    await update.message.reply_text(f"pong\nprovider={provider}\nmodel={model_name}")
+
+
 async def temp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     current = float(context.application.bot_data.get("temperature", DEFAULT_TEMPERATURE))
 
@@ -329,8 +368,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Пожалуйста, отправьте текстовое сообщение.")
         return
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
     provider = context.application.bot_data.get("provider", DEFAULT_PROVIDER)
     model_name = context.application.bot_data.get("model_name", DEFAULT_GEMINI_MODEL)
     temperature = float(context.application.bot_data.get("temperature", DEFAULT_TEMPERATURE))
@@ -347,10 +384,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         append_history(context, "user", user_text)
         append_history(context, "assistant", text)
 
-        await update.message.reply_text(text[:4096])
+        await send_reply_safe(update, context, text)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error while calling %s: %s", provider, exc)
-        await update.message.reply_text(explain_provider_error(exc, provider, model_name))
+        await send_reply_safe(update, context, explain_provider_error(exc, provider, model_name))
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -381,6 +418,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("temp", temp_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
