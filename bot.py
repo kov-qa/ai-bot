@@ -29,7 +29,6 @@ SYSTEM_PROMPT: Final[str] = (
 
 GEMINI_MODELS: Final[tuple[str, ...]] = (
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
 )
 
 XAI_MODELS: Final[tuple[str, ...]] = (
@@ -87,7 +86,7 @@ def parse_temperature(value: str | None, fallback: float = DEFAULT_TEMPERATURE) 
         parsed = float(value.replace(",", ".").strip())
     except ValueError:
         return fallback
-    return max(0.0, min(2.0, parsed))
+    return max(0.0, min(1.0, parsed))
 
 
 def append_history(context: ContextTypes.DEFAULT_TYPE, role: str, text: str) -> None:
@@ -218,7 +217,6 @@ def resolve_model_selection(raw: str) -> tuple[str, str] | None:
         "gemini": ("gemini", "gemini-2.5-flash"),
         "gemini 2.5": ("gemini", "gemini-2.5-flash"),
         "gemini 2.5 flash": ("gemini", "gemini-2.5-flash"),
-        "gemini 2.5 pro": ("gemini", "gemini-2.5-pro"),
         "grok": ("xai", "grok-4-latest"),
         "grok 4": ("xai", "grok-4-latest"),
         "grok 4 latest": ("xai", "grok-4-latest"),
@@ -287,7 +285,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         set_runtime_target(context.application, target_provider, target_model)
         persist_model(target_provider, target_model)
-        switched_label = "grok 4" if target_provider == "xai" else "gemini 2.5"
+        switched_label = "grok 4" if target_provider == "xai" else "gemini 3"
         await update.message.reply_text(
             f"Переключено на {switched_label}."
         )
@@ -302,7 +300,7 @@ async def temp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not context.args:
         await update.message.reply_text(
             f"Текущая температура: {current:.2f}\n"
-            "Использование: /temp <число от 0 до 2>\n"
+            "Использование: /temp <число от 0 до 1>\n"
             "Пример: /temp 0.7"
         )
         return
@@ -310,11 +308,11 @@ async def temp_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         parsed = float(context.args[0].replace(",", "."))
     except ValueError:
-        await update.message.reply_text("Некорректное значение. Укажите число от 0 до 2.")
+        await update.message.reply_text("Некорректное значение. Укажите число от 0 до 1.")
         return
 
-    if not (0.0 <= parsed <= 2.0):
-        await update.message.reply_text("Температура должна быть в диапазоне от 0 до 2.")
+    if not (0.0 <= parsed <= 1.0):
+        await update.message.reply_text("Температура должна быть в диапазоне от 0 до 1.")
         return
 
     context.application.bot_data["temperature"] = parsed
