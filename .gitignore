@@ -1,0 +1,10 @@
+.env
+*.pkl
+*.pyc
+__pycache__/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
+bot_data.pkl*
